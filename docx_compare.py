@@ -86,6 +86,44 @@ def normalize_cjk(text):
 
 # ──────────────────────── Document Extractor ────────────────────────
 class DocxExtractor:
+    # ── Tracked Changes (修订) Namespace ──
+    NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    @staticmethod
+    def _resolve_para_text(para_elem):
+        """Extract paragraph text with track-changes resolved.
+
+        Rules:
+        1. <w:ins> child → accept the inserted text (include its <w:r> children)
+        2. <w:del> child → skip entirely (exclude its <w:r> children)
+        3. Regular <w:r> → include as-is
+        4. Duplicate runs (same text repeated with different formatting) →
+           kept by the caller's dedup logic, not here.
+        """
+        w = DocxExtractor.NS_W
+        parts = []
+        for child in para_elem:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "r":
+                # Normal run — extract w:t text
+                for node in child.iter():
+                    ntag = node.tag.split("}")[-1] if "}" in node.tag else node.tag
+                    if ntag == "t" and node.text:
+                        parts.append(node.text)
+                        break
+            elif tag == "ins":
+                # Tracked insertion — accept the inserted runs
+                for r_elem in child.iter():
+                    rtag = r_elem.tag.split("}")[-1] if "}" in r_elem.tag else r_elem.tag
+                    if rtag == "t" and r_elem.text:
+                        parts.append(r_elem.text)
+                        break
+            elif tag == "del":
+                # Tracked deletion — skip entirely
+                continue
+            # Other elements (pPr, rPr, bookmarkStart, etc.) → ignore
+        return "".join(parts)
+
     @staticmethod
     def extract_text(filepath):
         doc = Document(filepath)
@@ -94,15 +132,7 @@ class DocxExtractor:
         for child in body:
             tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
             if tag == "p":
-                # In these patent documents, the first w:r text node is always
-                # the complete sentence. Subsequent runs repeat parts of it
-                # with different formatting (bold/italic). Taking only the first
-                # non-empty text node avoids duplication.
-                text = ""
-                for node in child.iter():
-                    if node.text and node.text.strip():
-                        text = node.text.strip()
-                        break
+                text = DocxExtractor._resolve_para_text(child)
                 if text:
                     paragraphs.append(text)
             elif tag == "tbl":
